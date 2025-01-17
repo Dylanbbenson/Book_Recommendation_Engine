@@ -2,6 +2,7 @@ import pandas as pd
 import requests
 from datetime import date, datetime
 import numpy as np
+from genre_mapping import genre_mapping
 current_date = date.today().strftime('%Y-%m-%d')
 current_year = date.today().year
 
@@ -34,6 +35,19 @@ def get_genre_from_openlibrary(isbn, author, title):
             return "Unknown"
     return "Unknown"
 
+# Function to normalize genres
+def normalize_genres(genres_str, mapping):
+    # Split the string into a list of genres
+    genres = [genre.strip() for genre in genres_str.split(",")]
+    normalized = set()  # Use a set to avoid duplicates
+    for genre in genres:
+        if genre in mapping:
+            normalized.add(mapping[genre])  # Map to the broader category
+        else:
+            normalized.add(genre)  # Keep the original genre if not in mapping
+    return list(normalized)  # Convert back to a list
+
+
 def prep_data(df):
     books = df[
         ['Title', 'ISBN', 'Author', 'Additional Authors', 'My Rating', 'Average Rating', 'Publisher', 'Number of Pages',
@@ -61,6 +75,10 @@ def prep_data(df):
 
     books['length_category'] = books['Number_of_Pages'].apply(categorize_pages)
     books['Genre'] = books.apply(lambda row: get_genre_from_openlibrary(row['ISBN'], row['Title'], row['Author']), axis=1)
+
+    # Apply the normalization
+    books['Normalized_Genres'] = books['Genre'].apply(lambda x: normalize_genres(x, genre_mapping))
+
     return books
 
 if __name__ == '__main__':
