@@ -1,38 +1,58 @@
 import pandas as pd
 import requests
-from datetime import date, datetime
+from datetime import date
 import numpy as np
 from genre_mapping import genre_mapping
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 current_date = date.today().strftime('%Y-%m-%d')
 current_year = date.today().year
 
 def categorize_pages(pages):
-    if pages < 150: return "Short"
-    elif pages < 300: return "Medium"
-    else: return "Long"
+    if pages < 150:
+        return "Short"
+    elif pages < 350:
+        return "Medium"
+    else:
+        return "Long"
 
 
 def get_genre_from_openlibrary(isbn, author, title):
-    # Build the query
+    # Try querying by ISBN first
     if isbn:
-        query = f"{isbn}"
-        response = requests.get(f"https://openlibrary.org/search.json?isbn={query}")
-    else:
-        query = f"{title} {author}"
-        response = requests.get(f"https://openlibrary.org/search.json?title={query}")
+        query = f"isbn={isbn}"
+        response = requests.get(f"https://openlibrary.org/search.json?{query}")
+
+        if response.status_code == 200:
+            data = response.json()
+            if data['docs']:  # If there are any results
+                subjects = data['docs'][0].get('subject', [])
+                if subjects:
+                    return ", ".join(subjects[:5])  # Return the top 5 subjects
+                else:
+                    return get_genre_from_openlibrary(None, author, title)
+            else:
+                return get_genre_from_openlibrary(None, author, title)
+        else:
+            print(f"https://openlibrary.org/search.json?{query}")
+
+    # Fallback to searching by title and author if ISBN search fails
+    query = f"title='{title}'&author='{author}'"
+    response = requests.get(f"https://openlibrary.org/search.json?{query}")
 
     if response.status_code == 200:
         data = response.json()
-        try:
-            # Get the subjects (genres) from the first result
+        if data['docs']:  # If there are results
             subjects = data['docs'][0].get('subject', [])
             if subjects:
-                # Return the first subject or join multiple as a string
-                return ", ".join(subjects[:3])  # Limit to top 3 subjects
+                return ", ".join(subjects[:5])  # Return the top 5 subjects
             else:
                 return "Unknown"
-        except (KeyError, IndexError):
+        else:
             return "Unknown"
+    else:
+        print(f"https://openlibrary.org/search.json?{query}")
+
     return "Unknown"
 
 # Function to normalize genres
@@ -61,7 +81,7 @@ def prep_data(df):
     # cleanup
     books['My_Rating'].replace(0, np.nan, inplace=True)
     books.dropna(subset=['Title'])
-    books[['Title', 'Series_Info']] = books['Title'].str.extract(r'^(.*?)(\s\([^)]*\))?$')
+    books[['Title', 'Series_Info']] = books['Title'].str.extract(r'^(.*?)(?:\s\(([^)]+)\))?$')
     books['Series_Info'] = books['Series_Info'].fillna('Standalone')
     books = books.drop_duplicates(subset=['Title', 'Author'])
     books['Date_Read'] = pd.to_datetime(books['Date_Read'])
@@ -74,14 +94,24 @@ def prep_data(df):
     })
 
     books['length_category'] = books['Number_of_Pages'].apply(categorize_pages)
-    books['Genre'] = books.apply(lambda row: get_genre_from_openlibrary(row['ISBN'], row['Title'], row['Author']), axis=1)
+
+    # Parallelize genre fetching using ThreadPoolExecutor
+    def fetch_genre(row):
+        return get_genre_from_openlibrary(row['ISBN'], row['Author'], row['Title'])
+
+    with ThreadPoolExecutor() as executor:
+        books['Genre'] = list(executor.map(fetch_genre, books.to_dict('records')))
 
     # Apply the normalization
-    books['Normalized_Genres'] = books['Genre'].apply(lambda x: normalize_genres(x, genre_mapping))
+    books = books[books['Genre'] != 'Unknown']
+    books['Genre'] = books['Genre'].apply(lambda x: normalize_genres(x, genre_mapping))
+    books = books[books['have_read'] == True]  # Optional filter
 
+    books = books[['Title','Author','My_Rating','Average_Rating','Number_of_Pages','Original_Publication_Year',
+                   'is_series','book_age','have_read','length_category','Genre']]
     return books
 
 if __name__ == '__main__':
     df = pd.read_csv('./data/goodreads_library_export.csv')
     books = prep_data(df)
-    books.to_csv('./data/cleaned_data.csv')
+    books.to_csv('./data/cleaned_data.csv', index=False)
