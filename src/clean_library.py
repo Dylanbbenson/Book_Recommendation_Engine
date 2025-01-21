@@ -3,6 +3,7 @@ import requests
 from datetime import date
 import numpy as np
 from genre_mapping import genre_mapping
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 current_date = date.today().strftime('%Y-%m-%d')
@@ -18,41 +19,31 @@ def categorize_pages(pages):
 
 
 def get_genre_from_openlibrary(isbn, author, title):
-    # Try querying by ISBN first
+    # Build the query
     if isbn:
         query = f"isbn={isbn}"
-        response = requests.get(f"https://openlibrary.org/search.json?{query}")
+    else:
+        query = f"title='{title}'&author='{author}'"
 
-        if response.status_code == 200:
-            data = response.json()
-            if data['docs']:  # If there are any results
-                subjects = data['docs'][0].get('subject', [])
-                if subjects:
-                    return ", ".join(subjects[:5])  # Return the top 5 subjects
-                else:
-                    return get_genre_from_openlibrary(None, author, title)
-            else:
-                return get_genre_from_openlibrary(None, author, title)
-        else:
-            print(f"https://openlibrary.org/search.json?{query}")
+    url = f"https://openlibrary.org/search.json?{query}"
 
-    # Fallback to searching by title and author if ISBN search fails
-    query = f"title='{title}'&author='{author}'"
-    response = requests.get(f"https://openlibrary.org/search.json?{query}")
+    response = requests.get(url)
+    if response.status_code == 429:
+        time.sleep(2)
+        response = requests.get(url)
 
     if response.status_code == 200:
         data = response.json()
-        if data['docs']:  # If there are results
+        try:
             subjects = data['docs'][0].get('subject', [])
             if subjects:
-                return ", ".join(subjects[:5])  # Return the top 5 subjects
+                return ", ".join(subjects[:5])  # Limit to top 5 subjects
             else:
                 return "Unknown"
-        else:
+        except (KeyError, IndexError):
+            print(f"No valid data for query: {url}")
             return "Unknown"
-    else:
-        print(f"https://openlibrary.org/search.json?{query}")
-
+    print(f"Failed request. Status code: {response.status_code} for query: {url}")
     return "Unknown"
 
 # Function to normalize genres
